@@ -1,0 +1,4 @@
+name: PyBukkit
+version: 1.0
+main: me.twister915.pybukkit.PyBukkit
+authors: [Twister]

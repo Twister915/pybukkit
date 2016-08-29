@@ -1,0 +1,35 @@
+plugins {
+    id 'java'
+    id "com.github.johnrengelman.shadow" version "1.2.3"
+}
+
+group 'me.twister915'
+version '1.0-SNAPSHOT'
+
+sourceCompatibility = 1.8
+
+repositories {
+    mavenCentral()
+    maven { url "https://nexus.solucorpus.com/repository/maven-all" }
+}
+
+dependencies {
+    testCompile group: 'junit', name: 'junit', version: '4.11'
+    compile group: 'org.python', name: 'jython-standalone', version: '2.7.1b3'
+    compile 'tech.rayline.redemptive:redemptive-core:1.2-SNAPSHOT'
+    compile 'org.reflections:reflections:0.9.10'
+    compile 'tech.rayline.redemptive:redemptive-serialize:1.1-SNAPSHOT'
+    compile group: 'org.mongodb', name: 'mongo-java-driver', version: '3.3.0'
+}
+
+shadowJar {
+    dependencies {
+        include(dependency('tech.rayline.redemptive:redemptive-core'))
+        include(dependency('tech.rayline.redemptive:redemptive-serialize'))
+        include(dependency('org.reflections:reflections'))
+        include(dependency('org.mongodb:mongo-java-driver'))
+        include(dependency('org.python:jython-standalone'))
+        include(dependency('org.javassist:javassist'))
+        include(dependency('com.google.code.gson:gson'))
+    }
+}
