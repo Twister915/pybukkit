@@ -1,5 +1,6 @@
 package me.twister915.pybukkit;
 
+import com.mongodb.DB;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoCredential;
 import com.mongodb.ServerAddress;
@@ -8,7 +9,6 @@ import lombok.AccessLevel;
 import lombok.Getter;
 import me.twister915.pybukkit.cmd.PyBukkitCommand;
 import me.twister915.pybukkit.script.ScriptManager;
-import me.twister915.pybukkit.source.LocalScriptSource;
 import org.bukkit.configuration.file.FileConfiguration;
 import tech.rayline.core.GsonBridge;
 import tech.rayline.core.inject.Inject;
@@ -23,15 +23,17 @@ import java.util.Collections;
 @Getter
 @IgnoreLibraries
 public final class PyBukkit extends RedemptivePlugin {
+    @Getter private static PyBukkit instance;
+
     @ResourceFile(filename = "mongo.yml", raw = true) @ReadOnlyResource @Getter(AccessLevel.NONE)
     private YAMLConfigurationFile databaseConfig;
 
     private MongoClient mongoClient;
-    private MongoDatabase mongoDB;
+    private DB mongoDB;
     private ScriptManager scriptManager;
     @Inject private GsonBridge gsonBridge;
 
-    private MongoDatabase createDatabase() {
+    private DB createDatabase() {
         FileConfiguration config = databaseConfig.getConfig();
         String host = config.getString("host", "localhost"), database = config.getString("database", "pybukkit"),
                 username = config.getString("username"), password = config.getString("password");
@@ -45,11 +47,12 @@ public final class PyBukkit extends RedemptivePlugin {
             mongoClient = new MongoClient(host, port);
         }
 
-        return mongoClient.getDatabase(database);
+        return mongoClient.getDB(database);
     }
 
     @Override
     protected void onModuleEnable() throws Exception {
+        instance = this;
         mongoDB = createDatabase();
         registerCommand(new PyBukkitCommand());
         PyBukkitLoadEvent pyBukkitLoadEvent = new PyBukkitLoadEvent(this);
@@ -60,7 +63,8 @@ public final class PyBukkit extends RedemptivePlugin {
 
     @Override
     protected void onModuleDisable() throws Exception {
-        scriptManager.onDisable();
+        scriptManager.unsubscribe();
         mongoClient.close();
+        instance = null;
     }
 }

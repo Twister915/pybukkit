@@ -1,15 +1,23 @@
 package me.twister915.pybukkit.sys;
 
+import com.mongodb.DB;
+import com.mongodb.DBCollection;
+import com.mongodb.DBObject;
 import com.mongodb.client.MongoDatabase;
+import me.twister915.pybukkit.util.ActionWrapper;
 import org.python.core.Py;
+import org.python.core.PyDictionary;
 import org.python.core.PyObject;
 import org.python.core.PyString;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+
 public final class MongoSystem extends PyObject implements SysType {
-    private final MongoDatabase database;
+    private final DB database;
     private final PyObject wrapped;
 
-    public MongoSystem(MongoDatabase database) {
+    public MongoSystem(DB database) {
         this.database = database;
         wrapped = Py.java2py(database);
     }

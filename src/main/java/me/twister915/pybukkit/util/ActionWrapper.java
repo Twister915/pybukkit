@@ -10,7 +10,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 @SuppressWarnings("unchecked")
-public final class ActionWrapper extends PyObject {
+public class ActionWrapper extends PyObject {
     private final Object instance;
     private final Method method;
     private final Map<String, Integer> paramsByName;
@@ -34,7 +34,9 @@ public final class ActionWrapper extends PyObject {
             if (names.length == 0)
                 interpreter.set(method.getName(), actionWrapper);
 
-            for (String s : names) interpreter.set(s, actionWrapper);
+            for (String s : names) {
+                interpreter.getSystemState().getBuiltins().__setitem__(s, actionWrapper);
+            }
         }
     }
 
@@ -65,13 +67,17 @@ public final class ActionWrapper extends PyObject {
             paramsByName.put(parameters[i].getName().toLowerCase(), i);
     }
 
+    public Object tojava(PyObject object, Class clazz) {
+        return object.__tojava__(clazz);
+    }
+
     @Override
     public PyObject __call__(PyObject[] args, String keywords[]) {
         Parameter[] parameters = method.getParameters();
         Object[] jArgs = new Object[parameters.length];
         int regParmasLength = args.length - keywords.length, setParams = 0;
         for (int i = 0; i < regParmasLength; i++) {
-            jArgs[i] = args[i].__tojava__(parameters[i].getType());
+            jArgs[i] = tojava(args[i], parameters[i].getType());
             parameters[i] = null; //mark set
             setParams++;
         }
@@ -89,7 +95,7 @@ public final class ActionWrapper extends PyObject {
                 if (jArgs[p] != null)
                     throw Py.SyntaxError("Specified the same variable twice!");
 
-                jArgs[p] = args[i].__tojava__(parameters[p].getType());
+                jArgs[p] = tojava(args[i], parameters[p].getType());
                 parameters[p] = null;
                 setParams++;
             }
@@ -116,7 +122,7 @@ public final class ActionWrapper extends PyObject {
                         else {
                             Map<String, Object> argument = new HashMap<>();
                             for (Map.Entry<String, PyObject> arg : extraKeywords.entrySet())
-                                argument.put(arg.getKey(), arg.getValue().__tojava__(actualTypeArgument));
+                                argument.put(arg.getKey(), tojava(arg.getValue(), actualTypeArgument));
                             finalArg = argument;
                         }
                         jArgs[mapParam] = finalArg;
@@ -140,11 +146,18 @@ public final class ActionWrapper extends PyObject {
                         setTo = null;
                     }
                     else if (parameter.isAnnotationPresent(DefaultValue.class)) {
+                        String value = parameter.getAnnotation(DefaultValue.class).value();
                         Class<?> type = parameter.getType();
-                        try {
-                            setTo = type.getMethod("valueOf", String.class).invoke(null, parameter.getAnnotation(DefaultValue.class).value());
+                        if (type == String.class) {
                             set = true;
-                        } catch (Exception e) {}
+                            setTo = value;
+                        }
+                        else {
+                            try {
+                                setTo = type.getMethod("valueOf", String.class).invoke(null, value);
+                                set = true;
+                            } catch (Exception ignored) {}
+                        }
                     }
 
                     if (set) {

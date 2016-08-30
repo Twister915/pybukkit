@@ -1,43 +1,40 @@
 package me.twister915.pybukkit.script;
 
-import com.google.common.collect.BiMap;
-import com.google.common.collect.HashBiMap;
+import com.google.common.collect.Multimap;
+import com.google.common.collect.Multimaps;
 import lombok.Getter;
 import me.twister915.pybukkit.PyBukkit;
 import me.twister915.pybukkit.sys.*;
 import org.bukkit.Bukkit;
+import org.bukkit.event.EventPriority;
 import org.python.core.Py;
 import org.python.core.PyObject;
-import org.python.util.PythonInterpreter;
+import rx.Scheduler;
 import rx.Subscription;
+import rx.functions.Action0;
 import rx.subscriptions.CompositeSubscription;
-import tech.rayline.core.util.RunnableShorthand;
 
-import java.util.HashSet;
-import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-public final class PBContext extends PyObject implements ScriptOwner {
+public final class PBContext extends PyObject implements Subscription {
     private boolean unsubscribed = false;
-    private final PyBukkit plugin;
-    @Getter private final ScriptOwner parent;
-    @Getter private final ScriptPath containingPath, selfPath;
-    private final Set<Object> originalAttributes = new HashSet<>();
-    @Getter private final BiMap<ScriptPath, ScriptOwner> children = HashBiMap.create();
-    private final PythonInterpreter interpreter;
+    @Getter private boolean unsubscribing = false;
+    private final Map<Class, Object> originalAttributes = new HashMap<>();
     private final ConcurrentMap<String, PyObject> attributes = new ConcurrentHashMap<>();
     private final CompositeSubscription subscription = new CompositeSubscription();
+    private final Multimap<String, ActionHandler> actionHandlers = Multimaps.newMultimap(new HashMap<>(), TreeSet::new);
+    @Getter private Scheduler.Worker sync, async;
 
-    public PBContext(PyBukkit plugin, ScriptOwner parent, ScriptPath selfPath, PythonInterpreter interpreter) {
-        this.plugin = plugin;
-        this.parent = parent;
-        this.selfPath = selfPath;
-        watchPath(selfPath);
-        this.containingPath = selfPath.getParent();
-        this.interpreter = interpreter;
+    public PBContext(PyBukkit plugin) {
+        sync = plugin.getSyncScheduler().createWorker();
+        async = plugin.getAsyncScheduler().createWorker();
         //systems
-        registerSystem(Bukkit.getServer(), "bukkit");
+        registerSystem(Bukkit.getServer(), "Bukkit");
+        registerSystem(Bukkit.getServer().getOnlinePlayers(), "players");
         registerSystem(new EventSystem(plugin), "event");
         registerSystem(plugin, "plugin");
         registerSystem(new MongoSystem(plugin.getMongoDB()), "mongo");
@@ -45,6 +42,25 @@ public final class PBContext extends PyObject implements ScriptOwner {
         registerSystem(new CommandSystem(plugin), "command");
         registerSystem(new DataSystem(plugin.getGsonBridge().getGson()),"data");
         registerSystem(new SchedulerSystem(plugin), "scheduler");
+    }
+
+    public void registerAction(String name, Action0 action0, EventPriority priority) {
+        actionHandlers.put(name.trim().toLowerCase(), new ActionHandler(priority.ordinal(), action0));
+    }
+
+    public void callAction(String name) {
+        for (ActionHandler action0 : actionHandlers.get(name)) {
+            try {
+                action0.getHandler().call();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+
+    }
+
+    public <T> T getSystem(Class<T> type) {
+        return (T) originalAttributes.get(type);
     }
 
     @Override
@@ -59,38 +75,15 @@ public final class PBContext extends PyObject implements ScriptOwner {
     public void __setattr__(String name, PyObject value) {
         throw Py.TypeError("Could not set attribute on system hooks!");
     }
-
-    public void invokeScript(ScriptPath path) throws Exception {
-        ScriptManager scriptManager = plugin.getScriptManager();
-        scriptManager.invokeScript(path, interpreter);
-        watchPath(path);
-    }
-
-    private void watchPath(ScriptPath path) {
-        subscription.add(plugin.getScriptManager().getScriptSource().watchUpdates(path).subscribe(update -> {
-            unsubscribe();
-            reinvoke();
-        }));
-    }
-
-    private void reinvoke() {
-        plugin.getScriptManager().invokeScriptRetry(selfPath, parent);
-    }
-
     void registerSystem(Object system, String... names) {
         PyObject pyObject = Py.java2py(system);
 
         for (String name : names)
             attributes.put(name, pyObject);
 
-        originalAttributes.add(system);
+        originalAttributes.put(system.getClass(), system);
         if (system instanceof SysType)
             ((SysType) system).enable();
-    }
-
-    public void addChild(ScriptPath name, ScriptOwner child) {
-        cleanChildren();
-        children.put(name, child);
     }
 
     @Override
@@ -98,26 +91,19 @@ public final class PBContext extends PyObject implements ScriptOwner {
         if (isUnsubscribed())
             return;
 
-        originalAttributes.forEach(t -> {
+        unsubscribing = true;
+        originalAttributes.values().forEach(t -> {
             if (t instanceof SysType)
                 ((SysType) t).disable();
         });
+        callAction("unload");
         subscription.unsubscribe();
-        cleanChildren();
-        children.values().forEach(Subscription::unsubscribe);
-        interpreter.close();
-        plugin.getLogger().info("Killed script " + selfPath);
         unsubscribed = true;
     }
 
     public boolean isActive() {
-        for (Object o : originalAttributes)
+        for (Object o : originalAttributes.values())
             if (o instanceof SysType && ((SysType) o).isActive())
-                return true;
-
-        cleanChildren();
-        for (ScriptOwner child : children.values())
-            if (!child.isUnsubscribed())
                 return true;
 
         return false;

@@ -7,7 +7,9 @@ import org.bukkit.event.EventPriority;
 import org.python.core.Py;
 import org.reflections.Reflections;
 import rx.Observable;
+import rx.Subscriber;
 import rx.Subscription;
+import rx.exceptions.OnErrorNotImplementedException;
 import rx.functions.Action1;
 import rx.subscriptions.CompositeSubscription;
 
@@ -31,55 +33,50 @@ public final class EventSystem implements SysType {
             EVENT_TYPES_RESOLVED.put(eventType.getSimpleName(), eventType);
     }
 
-//    public Subscription registerEvent(EventPriority priority, boolean ignoreCancelled, Class<? extends Event> type, Action1 action) {
-//        return registerEvent(priority, ignoreCancelled, type).subscribe(action);
-//    }
-
     public <T extends Event> Observable<T> registerEvent(Class<? extends T> type) {
+        return registerEvent(EventPriority.NORMAL, type);
+    }
+
+    public <T extends Event> Observable<T> registerEvent(EventPriority priority, Class<? extends T> type) {
+        return registerEvent(priority, false, type);
+    }
+
+    public <T extends Event> Observable<T> registerEvent(EventPriority priority,  boolean ignoreCancelled, Class<? extends T> type) {
         if (type == null)
             throw Py.RuntimeError("You cannot pass None to registerEvent!");
         if (!Event.class.isAssignableFrom(type))
             throw Py.TypeError("You cannot register for an event using the type " + type.getSimpleName() + "!");
 
         return Observable.create(subscriber -> {
-            subscriber.add(plugin.observeEvent(EventPriority.NORMAL, true, type).doOnError(plugin.getScriptManager()).subscribe(subscriber));
+            Observable<? extends T> observable = plugin.observeEvent(priority, ignoreCancelled, type);
+            subscriber.add(observable.subscribe(new Subscriber<T>() {
+                @Override
+                public void onCompleted() {
+                    subscriber.onCompleted();
+                }
+
+                @Override
+                public void onError(Throwable e) {
+                    plugin.getScriptManager().call(e);
+                    try {
+                        subscriber.onError(e);
+                    } catch (OnErrorNotImplementedException e1) {
+                        e.printStackTrace();
+                    }
+                }
+
+                @Override
+                public void onNext(T t) {
+                    try {
+                        subscriber.onNext(t);
+                    } catch (Exception e) {
+                        onError(e);
+                    }
+                }
+            }));
             subscriptions.add(subscriber);
         });
     }
-//
-//    public <T extends Event> Observable<T> registerEvent(EventPriority priority, Class<? extends T>... types) {
-//        return registerEvent(priority, false, types);
-//    }
-
-//    public <T extends Event> Observable<T> registerEvent(Class<? extends T>... types) {
-//        return registerEvent(EventPriority.NORMAL, types);
-//    }
-//
-//    public <T extends Event> Observable<T> registerEvent(String reqType, String... types) {
-//        boolean foundEventPriority = false;
-//        EventPriority eventPriority;
-//        try {
-//            eventPriority = EventPriority.valueOf(reqType.toUpperCase());
-//            foundEventPriority = true;
-//        } catch (Exception e) {
-//            eventPriority = EventPriority.NORMAL;
-//        }
-//        int offset = foundEventPriority ? 1 : 0;
-//        Class[] classes = new Class[(1 - offset) + types.length];
-//        for (int i = 0; i < types.length + offset; i++) {
-//            String val;
-//            if (i == -offset) val = reqType; //some magic there- if it's 0 then it stays 0, otherwise -1
-//            else val = types[i - (1 - offset)];
-//
-//            Class<? extends Event> type = EVENT_TYPES_RESOLVED.get(val);
-//            if (type == null)
-//                throw Py.NameError(val + " is not a valid event name!");
-//
-//            classes[i] = type;
-//        }
-//
-//        return registerEvent(eventPriority, classes);
-//    }
 
     @Override
     public void disable() {

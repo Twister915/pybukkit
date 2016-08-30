@@ -40,14 +40,17 @@ public final class CommandSystem implements SysType {
         try {
             Field field = commandMap.getClass().getDeclaredField("knownCommands");
             field.setAccessible(true);
+            Set<String> disabled = new HashSet<>();
             Map<String, Command> knownCommands = (Map<String, Command>) field.get(commandMap);
             for (Iterator<Command> commandItr = knownCommands.values().iterator(); commandItr.hasNext(); ) {
                 Command next = commandItr.next();
                 if (registered.contains(next)) {
                     commandItr.remove();
-                    plugin.getLogger().info("Unregistered /" + next.getName());
+                    disabled.add(next.getName());
                 }
             }
+            for (String s : disabled)
+                plugin.getLogger().info("Unregistered /" + s);
             registered.clear();
         } catch (Exception e) {
             throw new RuntimeException("Could not unregister commands!", e);

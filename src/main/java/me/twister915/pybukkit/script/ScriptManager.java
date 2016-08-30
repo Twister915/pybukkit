@@ -1,11 +1,8 @@
 package me.twister915.pybukkit.script;
 
-import com.google.common.collect.BiMap;
-import com.google.common.collect.ImmutableBiMap;
 import lombok.Getter;
 import me.twister915.pybukkit.PyBukkit;
 import me.twister915.pybukkit.PyBukkitLoadEvent;
-import me.twister915.pybukkit.source.RunnableScript;
 import me.twister915.pybukkit.source.ScriptSource;
 import me.twister915.pybukkit.util.ActionWrapper;
 import org.bukkit.Bukkit;
@@ -13,83 +10,61 @@ import org.bukkit.ChatColor;
 import org.python.core.Options;
 import org.python.core.Py;
 import org.python.core.PyFrame;
+import org.python.core.PySystemState;
 import org.python.util.PythonInterpreter;
 import rx.functions.Action1;
 import tech.rayline.core.util.RunnableShorthand;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.StringWriter;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
-public class ScriptManager implements ScriptOwner, Action1<Throwable> {
+public class ScriptManager implements Action1<Throwable> {
     static {
         Options.includeJavaStackInExceptions = true;
         Options.respectJavaAccessibility = false;
         Options.showJavaExceptions = true;
-        Options.verbose = 2;
         Options.dont_write_bytecode = true;
     }
 
     private final PyBukkit plugin;
     @Getter private final ScriptSource scriptSource;
-    @Getter private final ScriptPath containingPath = ScriptPath.ROOT;
     private final Map<Class<? extends Exception>, ErrorHandler<?>> errorHandlers = new HashMap<>();
+    private PythonInterpreter pythonInterpreter;
+    @Getter private PBContext currentContext = null;
 
-    private ScriptOwner index;
-    private ScriptPath indexPath;
 
     public ScriptManager(PyBukkitLoadEvent event) throws Exception {
         this.plugin = event.getPlugin();
         this.scriptSource = event.getScriptSource();
         this.errorHandlers.putAll(event.getErrorHandlers());
+        getScriptSource().enable();
     }
 
-    public void invokeScript(PBContext parent, String id) throws Exception {
-        invokeScript(parent.getContainingPath().append(id), parent);
+    private void invokeIndex0() throws IOException {
+        pythonInterpreter = new PythonInterpreter(null, new PySystemState());
+        pythonInterpreter.setOut(new PythonConsole("&aOUT"));
+        pythonInterpreter.setErr(new PythonConsole("&cERROR"));
+        pythonInterpreter.getSystemState().path.append(Py.java2py(getScriptSource().getRoot().getAbsolutePath()));
+        currentContext = new PBContext(plugin);
+        pythonInterpreter.getSystemState().getBuiltins().__setitem__("pyb", currentContext);
+        ActionWrapper.injectMethods(new PyBukkitFunctions(plugin, currentContext), pythonInterpreter);
+        File init = new File(getScriptSource().getRoot(), "__init__.py");
+        try (FileInputStream stream = new FileInputStream(init)) {
+            pythonInterpreter.execfile(stream, init.getName());
+            currentContext.callAction("load");
+        }
+        getScriptSource().watchUpdate().debounce(5, TimeUnit.SECONDS).take(1).observeOn(plugin.getSyncScheduler()).subscribe(update -> {
+            doAndRetry("reload", 5, TimeUnit.SECONDS, this::reload);
+        });
     }
 
     public void invokeIndex() {
-        invokeScriptRetry(containingPath.append(plugin.getConfig().getString("__init__", "__init__")), this);
-    }
-
-    void invokeScript(ScriptPath path, ScriptOwner owner) throws Exception {
-        PythonInterpreter pythonInterpreter = new PythonInterpreter();
-        pythonInterpreter.setOut(new PythonConsole("&aOUT"));
-        pythonInterpreter.setErr(new PythonConsole("&cERROR"));
-        PBContext pbContext = new PBContext(plugin, owner, path, pythonInterpreter);
-        pythonInterpreter.set("pyb", pbContext);
-        ActionWrapper.injectMethods(new PyBukkitFunctions(plugin, pbContext), pythonInterpreter);
-        try {
-            invokeScript(path, pythonInterpreter);
-            if (!pbContext.isUnsubscribed())
-                owner.addChild(path, pbContext);
-            else
-                pbContext.unsubscribe();
-        } catch (Exception e) {
-            if (!pbContext.isUnsubscribed())
-                pbContext.unsubscribe();
-            throw e;
-        }
-    }
-
-    void invokeScript(ScriptPath path, PythonInterpreter pythonInterpreter) throws Exception {
-        if (!scriptSource.exists(path))
-            throw new IOException("Could not find script " + path);
-
-        plugin.getLogger().info("Running script " + path + "!");
-        RunnableScript runnableScript = scriptSource.loadScript(path);
-        try (InputStream stream = runnableScript.getScript()) {
-            pythonInterpreter.execfile(stream, path.toString());
-        }
-    }
-
-    void invokeScriptRetry(ScriptPath path, ScriptOwner owner) {
-        doAndRetry("invoke script " + path, 5, TimeUnit.SECONDS, () -> {
-            invokeScript(path, owner);
-        });
+        doAndRetry("invoke script", 5, TimeUnit.SECONDS, this::invokeIndex0);
     }
 
     @SuppressWarnings("unchecked")
@@ -117,57 +92,26 @@ public class ScriptManager implements ScriptOwner, Action1<Throwable> {
         try {
             action.call();
         } catch (Exception e) {
+            unsubscribe();
             e.printStackTrace();
-            plugin.getLogger().warning("Retrying " + name + "in " + time + " " + timeUnit.name().toLowerCase() + "!");
+            plugin.getLogger().warning("Retrying " + name + " in " + time + " " + timeUnit.name().toLowerCase() + "!");
             RunnableShorthand.forPlugin(plugin).with(() -> doAndRetry(name, time, timeUnit, action)).later(timeUnit.toMillis(time) / 50);
         }
     }
 
-    public boolean killScript(ScriptPath path) {
-        ScriptOwner scriptOwner = getChild(path);
-        if (scriptOwner == null)
-            return false;
-
-        scriptOwner.unsubscribe();
-        return true;
-    }
-
-    public void onDisable() {
-        unsubscribe();
-    }
-
-    @Override
-    public void addChild(ScriptPath path, ScriptOwner other) {
-        if (index != null && !index.isUnsubscribed())
-            throw new IllegalArgumentException("The index script is the only script ScriptManager can be responsible for!");
-
-        index = other;
-        indexPath = path;
-    }
-
-    @Override
-    public BiMap<ScriptPath, ? extends ScriptOwner> getChildren() {
-        if (indexPath == null || index == null)
-            return ImmutableBiMap.of();
-
-        return ImmutableBiMap.of(indexPath, index);
-    }
-
-    @Override
     public void unsubscribe() {
-        if (isUnsubscribed())
+        if (currentContext == null)
             return;
-        index.unsubscribe();
-    }
 
-    @Override
-    public boolean isUnsubscribed() {
-        return index.isUnsubscribed();
+        currentContext.unsubscribe();
+        currentContext = null;
+
+        pythonInterpreter = null;
     }
 
     public void reload() throws Exception {
         unsubscribe();
-        invokeIndex();
+        invokeIndex0();
     }
 
     private static final class PythonConsole extends StringWriter {
@@ -187,6 +131,7 @@ public class ScriptManager implements ScriptOwner, Action1<Throwable> {
             if (s.length() == 0)
                 return;
 
+            s = ChatColor.stripColor(s);
             PyFrame frame = Py.getThreadState().frame;
             int getline;
             String name;
